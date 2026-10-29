@@ -142,11 +142,21 @@ def optimize_weights(
     covariance_values = covariance.to_numpy()
 
     bounds = []
+    lower_bounds = []
+    upper_bounds = []
     for code in universe:
         if code in candidate_set:
-            bounds.append((0.0, max_weight))
+            lower, upper = 0.0, max_weight
         else:
-            bounds.append((0.0, min(max_weight, float(previous_full.loc[code]))))
+            lower, upper = (
+                0.0,
+                min(max_weight, float(previous_full.loc[code])),
+            )
+        lower_bounds.append(lower)
+        upper_bounds.append(upper)
+        bounds.append((lower, upper))
+    lower_array = np.asarray(lower_bounds, dtype=float)
+    upper_array = np.asarray(upper_bounds, dtype=float)
 
     initial = pd.Series(0.0, index=universe)
     try:
@@ -186,6 +196,55 @@ def optimize_weights(
         return max_one_way_turnover - _one_way_turnover(
             weights, previous_full.to_numpy()
         )
+
+    def is_feasible(
+        values: np.ndarray,
+        vol_limit: float,
+        *,
+        tolerance: float = 2e-6,
+    ) -> bool:
+        if not np.isfinite(values).all():
+            return False
+        risk_value = float(values @ covariance_values @ values)
+        beta_value = (
+            float(beta_vector @ values)
+            if beta_vector is not None
+            else beta_target
+        )
+        return bool(
+            abs(values.sum() - 1.0) <= tolerance * 10
+            and np.all(values >= lower_array - tolerance)
+            and np.all(values <= upper_array + tolerance)
+            and risk_value <= vol_limit**2 + tolerance
+            and _one_way_turnover(values, previous_full.to_numpy())
+            <= max_one_way_turnover + tolerance
+            and abs(beta_value - beta_target)
+            <= beta_tolerance + tolerance * 10
+        )
+
+    def finalize_weights(values: np.ndarray) -> pd.Series:
+        weights = pd.Series(values, index=universe).clip(
+            lower=0.0, upper=upper_array
+        )
+        weights.loc[weights.abs() < 1e-12] = 0.0
+        difference = 1.0 - weights.sum()
+        if difference > 0:
+            slack = pd.Series(upper_array, index=universe) - weights
+            eligible = slack[slack > 1e-12]
+            if eligible.empty:
+                raise RuntimeError("No weight slack to complete portfolio")
+            weights.loc[eligible.index] += (
+                eligible / eligible.sum() * difference
+            )
+        elif difference < 0:
+            reducible = weights - pd.Series(lower_array, index=universe)
+            eligible = reducible[reducible > 1e-12]
+            if eligible.empty:
+                raise RuntimeError("No weight room to reduce portfolio")
+            weights.loc[eligible.index] -= (
+                eligible / eligible.sum() * (-difference)
+            )
+        return weights
 
     attempts = 0
     last_message = "not attempted"
@@ -230,39 +289,21 @@ def optimize_weights(
         )
         last_message = str(result.message)
         candidate = np.asarray(result.x, dtype=float)
-        risk_value = float(candidate @ covariance_values @ candidate)
-        beta_value = (
-            float(beta_vector @ candidate)
-            if beta_vector is not None
-            else beta_target
-        )
-        feasible = bool(
-            np.isfinite(candidate).all()
-            and abs(candidate.sum() - 1.0) <= 2e-5
-            and candidate.min() >= -2e-6
-            and candidate.max() <= max_weight + 2e-5
-            and risk_value <= effective_target**2 + 2e-6
-            and _one_way_turnover(
-                candidate, previous_full.to_numpy()
-            )
-            <= max_one_way_turnover + 2e-6
-            and abs(beta_value - beta_target)
-            <= beta_tolerance + 2e-5
-        )
-        if result.success or feasible:
-            weights = pd.Series(result.x, index=universe)
-            weights.loc[weights.abs() < 1e-8] = 0.0
-            weights = weights.clip(lower=0.0, upper=max_weight + 1e-8)
-            if abs(weights.sum() - 1.0) > 1e-6:
-                weights = weights / weights.sum()
+        if is_feasible(candidate, effective_target):
+            weights = finalize_weights(candidate)
+            if not is_feasible(
+                weights.to_numpy(),
+                effective_target,
+                tolerance=1e-5,
+            ):
+                last_message = (
+                    "SLSQP result failed post-finalization constraint checks"
+                )
+                continue
             return OptimizationResult(
                 weights=weights,
                 success=True,
-                status=(
-                    last_message
-                    if result.success
-                    else f"feasible approximation: {last_message}"
-                ),
+                status=last_message,
                 attempts=attempts,
                 annualized_volatility=portfolio_volatility(weights, covariance),
                 target_one_way_turnover=_one_way_turnover(
@@ -272,24 +313,50 @@ def optimize_weights(
                 fallback=False,
             )
 
+    fallback_candidates: list[tuple[str, pd.Series]] = []
     try:
-        fallback = inverse_volatility_weights(
-            covariance, candidates, max_weight=max_weight
+        fallback_candidates.append(
+            (
+                "inverse-vol",
+                inverse_volatility_weights(
+                    covariance, candidates, max_weight=max_weight
+                ),
+            )
         )
-        status = f"optimizer fallback to inverse-vol: {last_message}"
     except ValueError:
-        fallback = equal_weights(candidates, max_weight=max_weight)
-        status = f"optimizer fallback to equal-weight: {last_message}"
-    return OptimizationResult(
-        weights=fallback,
-        success=False,
-        status=status,
-        attempts=attempts,
-        annualized_volatility=portfolio_volatility(fallback, covariance),
-        target_one_way_turnover=_one_way_turnover(
-            fallback.reindex(universe, fill_value=0.0).to_numpy(),
-            previous_full.to_numpy(),
-        ),
-        effective_vol_target=annual_vol_target,
-        fallback=True,
+        pass
+    try:
+        fallback_candidates.append(
+            ("equal-weight", equal_weights(candidates, max_weight=max_weight))
+        )
+    except ValueError:
+        pass
+    if previous.sum() > 0:
+        fallback_candidates.append(("previous-weights", previous))
+
+    for name, fallback in fallback_candidates:
+        fallback_values = fallback.reindex(universe, fill_value=0.0).to_numpy()
+        if is_feasible(
+            fallback_values,
+            annual_vol_target * 1.60,
+            tolerance=1e-5,
+        ):
+            return OptimizationResult(
+                weights=fallback,
+                success=False,
+                status=f"optimizer fallback to {name}: {last_message}",
+                attempts=attempts,
+                annualized_volatility=portfolio_volatility(
+                    fallback, covariance
+                ),
+                target_one_way_turnover=_one_way_turnover(
+                    fallback_values,
+                    previous_full.to_numpy(),
+                ),
+                effective_vol_target=annual_vol_target * 1.60,
+                fallback=True,
+            )
+    raise RuntimeError(
+        "No optimizer or fallback portfolio satisfied all constraints: "
+        f"{last_message}"
     )

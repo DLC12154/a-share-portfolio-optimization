@@ -1,5 +1,5 @@
 {
-  "run_at_utc": "2026-10-29T15:43:51.224498+00:00",
+  "run_at_utc": "2026-10-29T16:28:19.292216+00:00",
   "python": "3.12.15",
   "alpha_source": "composite",
   "external_alpha": null,
@@ -53,6 +53,7 @@
     "No permanent market impact or order-book queue model",
     "Baostock historical membership is provider-reconstructed",
     "2024-2025 is a retrospective time holdout, not a pre-registered OOS",
-    "The risk-penalized utility was added after the first holdout review and is not a blind strategy"
+    "The risk-penalized utility was added after the first holdout review and is not a blind strategy",
+    "Beta uses the contemporaneous eligible-universe equal-weight proxy, not the official CSI 300 index"
   ]
 }

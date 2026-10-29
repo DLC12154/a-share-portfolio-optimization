@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from portfolio_research.risk import (  # noqa: E402
+    estimate_eligible_universe_betas,
     estimate_shrunk_covariance,
     portfolio_volatility,
 )
@@ -46,6 +47,20 @@ class RiskModelTests(unittest.TestCase):
             returns, ["A", "B", "C"], shrinkage=0.20
         )
         self.assertEqual(covariance.index.tolist(), ["A", "B"])
+
+    def test_beta_uses_same_paired_sample_for_numerator_and_denominator(self) -> None:
+        returns = pd.DataFrame(
+            {
+                "A": [0.01, 0.02, -0.01, 0.03, np.nan, np.nan, np.nan],
+                "B": [0.01, 0.02, -0.01, 0.03, 0.20, -0.20, 0.15],
+            }
+        )
+        beta = estimate_eligible_universe_betas(
+            returns,
+            codes=["A"],
+            market_codes=["A", "B"],
+        )
+        self.assertAlmostEqual(float(beta["A"]), 1.0, places=8)
 
 
 if __name__ == "__main__":

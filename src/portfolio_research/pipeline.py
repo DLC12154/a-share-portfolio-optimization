@@ -40,7 +40,7 @@ from .optimizer import (
 )
 from .risk import (
     annualized_volatilities,
-    estimate_market_betas,
+    estimate_eligible_universe_betas,
     estimate_shrunk_covariance,
     portfolio_volatility,
 )
@@ -131,8 +131,11 @@ def build_targets(
             optimized_universe,
             shrinkage=config.covariance_shrinkage,
         )
-        optimized_betas = estimate_market_betas(
-            risk_returns, optimized_covariance.index.tolist()
+        eligible_market_codes = date_frame["code"].tolist()
+        optimized_betas = estimate_eligible_universe_betas(
+            risk_returns,
+            optimized_covariance.index.tolist(),
+            market_codes=eligible_market_codes,
         )
         optimization = optimize_weights(
             candidate_codes=available_candidates,
@@ -157,8 +160,10 @@ def build_targets(
             utility_universe,
             shrinkage=config.covariance_shrinkage,
         )
-        utility_betas = estimate_market_betas(
-            risk_returns, utility_covariance.index.tolist()
+        utility_betas = estimate_eligible_universe_betas(
+            risk_returns,
+            utility_covariance.index.tolist(),
+            market_codes=eligible_market_codes,
         )
         utility = optimize_weights(
             candidate_codes=available_candidates,
@@ -177,8 +182,9 @@ def build_targets(
         strategies["optimized_utility"] = utility.weights
 
         for strategy, weights in strategies.items():
-            weights = weights[weights > 1e-10]
-            weights = weights / weights.sum()
+            if strategy not in {"optimized", "optimized_utility"}:
+                weights = weights[weights > 1e-10]
+                weights = weights / weights.sum()
             for code, weight in weights.items():
                 target_rows.append(
                     {
@@ -250,7 +256,7 @@ def build_targets(
                     "realized_annual_volatility": result.annualized_volatility,
                     "target_one_way_turnover": result.target_one_way_turnover,
                     "max_one_way_turnover": config.max_one_way_turnover,
-                    "ex_ante_beta": ex_ante_beta,
+                    "ex_ante_universe_beta": ex_ante_beta,
                     "optimized_assets": int((result.weights > 1e-8).sum()),
                 }
             )
@@ -522,6 +528,7 @@ def write_results_document(
         f"- 协方差收缩系数：{config.covariance_shrinkage:.2f}",
         f"- 风险惩罚系数：{config.risk_aversion:.2f}",
         f"- 换手惩罚系数：{config.turnover_penalty:.2f}",
+        "- Beta市场代理：当期全部合格沪深300历史成分股等权收益",
         "",
         "`optimized`只最大化Alpha并在硬约束内分配权重，"
         "`optimized_utility`额外把协方差风险和换手惩罚放入目标函数。"
@@ -557,12 +564,16 @@ def write_results_document(
         f"{metric(holdout, 'optimized_utility', 'cagr'):.2%}、"
         f"Sharpe为{metric(holdout, 'optimized_utility', 'sharpe'):.3f}、"
         f"最大回撤为{metric(holdout, 'optimized_utility', 'max_drawdown'):.2%}。"
+        f"同期等权基准CAGR为{metric(holdout, 'benchmark', 'cagr'):.2%}、"
+        f"Sharpe为{metric(holdout, 'benchmark', 'sharpe'):.3f}、"
+        f"最大回撤为{metric(holdout, 'benchmark', 'max_drawdown'):.2%}；"
+        "修正Beta后优化组合只有最大回撤更小，收益和Sharpe均落后。"
         f"同换手约束的Top 25等权组合CAGR为"
         f"{metric(holdout, 'equal_top25_turnover_cap', 'cagr'):.2%}、"
         f"Sharpe为{metric(holdout, 'equal_top25_turnover_cap', 'sharpe'):.3f}、"
         f"最大回撤为"
         f"{metric(holdout, 'equal_top25_turnover_cap', 'max_drawdown'):.2%}。"
-        "风险惩罚改善了纯Alpha分配器，但没有稳定超过同规模简单等权组合，"
+        "风险惩罚降低了部分回撤，但没有改善收益，也没有稳定超过同规模简单等权组合，"
         "不能只与包含约300只股票的等权基准比较。",
         "",
         f"排除政策行情窗口后，风险惩罚组合CAGR为"
@@ -725,6 +736,7 @@ def run_pipeline(
             "Baostock historical membership is provider-reconstructed",
             "2024-2025 is a retrospective time holdout, not a pre-registered OOS",
             "The risk-penalized utility was added after the first holdout review and is not a blind strategy",
+            "Beta uses the contemporaneous eligible-universe equal-weight proxy, not the official CSI 300 index",
         ],
     }
     (output_dir / "run_metadata.json").write_text(

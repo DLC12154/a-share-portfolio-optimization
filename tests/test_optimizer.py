@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -56,7 +58,7 @@ class OptimizerTests(unittest.TestCase):
             max_weight=0.40,
             annual_vol_target=0.35,
             max_one_way_turnover=0.30,
-            betas=pd.Series(1.0, index=self.codes),
+            betas=pd.Series([0.5, 1.0, 1.5, 1.0, 0.8], index=self.codes),
             beta_tolerance=0.05,
         )
         self.assertTrue(result.success)
@@ -67,6 +69,57 @@ class OptimizerTests(unittest.TestCase):
             portfolio_volatility(result.weights, self.covariance),
             result.effective_vol_target + 1e-5,
         )
+        weighted_beta = result.weights.dot(
+            pd.Series([0.5, 1.0, 1.5, 1.0, 0.8], index=self.codes)
+        )
+        self.assertTrue(0.95 - 1e-8 <= weighted_beta <= 1.05 + 1e-8)
+
+    def test_infeasible_beta_raises_instead_of_false_success(self) -> None:
+        codes = ["A", "B", "C"]
+        covariance = pd.DataFrame(
+            np.diag([0.04, 0.09, 0.16]), index=codes, columns=codes
+        )
+        with self.assertRaises(RuntimeError):
+            optimize_weights(
+                candidate_codes=codes,
+                alpha_score=pd.Series([1.0, 0.5, 0.0], index=codes),
+                covariance=covariance,
+                previous_weights=pd.Series(dtype=float),
+                max_weight=0.50,
+                annual_vol_target=1.0,
+                max_one_way_turnover=1.0,
+                betas=pd.Series(2.0, index=codes),
+                beta_target=1.0,
+                beta_tolerance=0.20,
+            )
+
+    def test_solver_success_flag_cannot_bypass_constraint_checks(self) -> None:
+        codes = ["A", "B", "C"]
+        covariance = pd.DataFrame(
+            np.diag([0.04, 0.09, 0.16]), index=codes, columns=codes
+        )
+        impossible = SimpleNamespace(
+            success=True,
+            x=np.array([1.0, 0.0, 0.0]),
+            message="reported success with an infeasible point",
+        )
+        with patch(
+            "portfolio_research.optimizer.minimize",
+            return_value=impossible,
+        ):
+            with self.assertRaises(RuntimeError):
+                optimize_weights(
+                    candidate_codes=codes,
+                    alpha_score=pd.Series([1.0, 0.5, 0.0], index=codes),
+                    covariance=covariance,
+                    previous_weights=pd.Series(dtype=float),
+                    max_weight=0.50,
+                    annual_vol_target=1.0,
+                    max_one_way_turnover=1.0,
+                    betas=pd.Series(2.0, index=codes),
+                    beta_target=1.0,
+                    beta_tolerance=0.20,
+                )
 
     def test_turnover_limited_target_moves_gradually(self) -> None:
         target = pd.Series([0.5, 0.5, 0.0], index=["A", "B", "C"])

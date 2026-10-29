@@ -47,20 +47,32 @@ def annualized_volatilities(covariance: pd.DataFrame) -> pd.Series:
     )
 
 
-def estimate_market_betas(
+def estimate_eligible_universe_betas(
     returns_window: pd.DataFrame,
     codes: list[str],
+    market_codes: list[str],
 ) -> pd.Series:
+    """Estimate beta to the contemporaneous eligible-universe equal-weight proxy.
+
+    Each stock uses the same paired sample for its covariance numerator and the
+    market variance denominator.
+    """
     available = [code for code in codes if code in returns_window.columns]
     frame = returns_window[available].copy()
-    market = frame.mean(axis=1)
-    variance = market.var(ddof=1)
-    if not np.isfinite(variance) or variance <= 0:
+    market_columns = [
+        code for code in market_codes if code in returns_window.columns
+    ]
+    if len(market_columns) < 2:
         return pd.Series(1.0, index=available)
+    market = returns_window[market_columns].mean(axis=1).rename("market")
     betas = {}
     for code in available:
         pair = pd.concat([frame[code], market.rename("market")], axis=1).dropna()
         if len(pair) < 30:
+            betas[code] = 1.0
+            continue
+        variance = pair["market"].var(ddof=1)
+        if not np.isfinite(variance) or variance <= 0:
             betas[code] = 1.0
             continue
         covariance = pair[code].cov(pair["market"])

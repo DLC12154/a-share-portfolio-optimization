@@ -108,8 +108,10 @@ def main() -> None:
         "Target one-way turnover exceeds the cap",
     )
     require(
-        diagnostics["ex_ante_beta"].between(0.80 - 1e-5, 1.20 + 1e-5).all(),
-        "Ex-ante portfolio beta breached its constraint",
+        diagnostics["ex_ante_universe_beta"].between(
+            0.80 - 1e-5, 1.20 + 1e-5
+        ).all(),
+        "Ex-ante eligible-universe beta breached its constraint",
     )
 
     navs = pd.read_csv(PROCESSED / "daily_nav.csv", parse_dates=["date"])
