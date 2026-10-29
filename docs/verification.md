@@ -20,11 +20,13 @@ Python：3.12.15
 C:\Users\ad\.conda\envs\teach\python.exe -m unittest discover -s tests -v
 ```
 
-结果：6项测试全部通过，覆盖：
+结果：8项测试全部通过，覆盖：
 
 - 权重归一化与单票上限；
 - 逆波动率权重；
 - 风险、Beta与换手约束；
+- 风险惩罚是否真实改变配置；
+- 换手受限目标是否逐步退出旧持仓；
 - 协方差对称半正定；
 - 缺失收益资产剔除；
 - 次日开盘交易和成本扣除。
@@ -40,7 +42,7 @@ C:\Users\ad\.conda\envs\teach\python.exe run.py
 结果：
 
 - 291个信号日全部生成目标组合；
-- 优化器成功291次，回退0次；
+- `optimized`和`optimized_utility`各成功291次，回退0次；
 - 每个执行日、每个策略目标权重和为1；
 - 优化组合最大单票权重5%；
 - 最大事前年化波动率22%；
@@ -64,8 +66,8 @@ C:\Users\ad\.conda\envs\teach\python.exe scripts\validate_outputs.py
 - `data/processed/trades.csv.gz`：完整交易日志；
 - `data/processed/rebalances.csv`：调仓、换手、成本和阻塞统计；
 - `data/processed/daily_nav.csv`：每日净值；
-- `figures/`：时间外净值、回撤、换手和事前风险图。
+- `figures/`：时间外净值、回撤、换手、分年收益和事前风险图。
 
 ## 结论边界
 
-优化组合在2024–2025时间外区间相对全市场等权净基准改善了Sharpe和最大回撤，但没有稳定跑赢Top 50等权组合。因此，结果支持“复合Alpha和低风险特征有效”，不支持“优化器具有稳定独立增量”。
+优化组合在2024–2025时间外区间相对全市场等权净基准改善了Sharpe和最大回撤，但没有稳定跑赢同持股规模的Top 20/25等权组合。2025年复合信号Mean RankIC为-0.0060，信号方向已经失效。因此结果不支持“复合Alpha跨年度稳定有效”，也不支持“优化器具有稳定独立增量”。

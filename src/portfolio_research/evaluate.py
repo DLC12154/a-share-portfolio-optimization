@@ -10,6 +10,9 @@ from .config import (
     HOLDOUT_START,
 )
 
+POLICY_RALLY_START = pd.Timestamp("2024-09-10")
+POLICY_RALLY_END = pd.Timestamp("2024-10-10")
+
 
 def period_metrics(
     nav: pd.Series,
@@ -53,6 +56,54 @@ def period_metrics(
     }
 
 
+def event_adjusted_metrics(
+    nav: pd.Series,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    event_start: pd.Timestamp,
+    event_end: pd.Timestamp,
+) -> dict:
+    """Measure the remaining path after neutralizing an event-window return."""
+    before = nav.loc[nav.index < start]
+    base = float(before.iloc[-1]) if not before.empty else 1.0
+    segment = nav.loc[(nav.index >= start) & (nav.index <= end)]
+    if segment.empty:
+        return {}
+    values = pd.concat(
+        [pd.Series([base], index=[start - pd.Timedelta(days=1)]), segment]
+    )
+    returns = values.pct_change().dropna()
+    first_after = returns.index[returns.index > event_end]
+    mask = (returns.index >= event_start) & (returns.index <= event_end)
+    if len(first_after):
+        mask = mask | (returns.index == first_after.min())
+    adjusted = returns.mask(mask, 0.0)
+    synthetic = (1.0 + adjusted).cumprod()
+    synthetic = pd.concat(
+        [pd.Series([1.0], index=[adjusted.index[0] - pd.Timedelta(days=1)]), synthetic]
+    )
+    total_return = float(synthetic.iloc[-1] - 1.0)
+    periods = max(len(adjusted), 1)
+    cagr = float((1.0 + total_return) ** (252.0 / periods) - 1.0)
+    volatility = float(adjusted.std(ddof=1) * np.sqrt(252.0))
+    sharpe = (
+        float(adjusted.mean() / adjusted.std(ddof=1) * np.sqrt(252.0))
+        if adjusted.std(ddof=1) > 0
+        else np.nan
+    )
+    drawdown = (synthetic / synthetic.cummax() - 1.0).min()
+    return {
+        "observations": int(len(adjusted)),
+        "total_return": total_return,
+        "cagr": cagr,
+        "annual_volatility": volatility,
+        "sharpe": sharpe,
+        "max_drawdown": float(drawdown),
+        "calmar": cagr / abs(float(drawdown)) if drawdown < 0 else np.nan,
+        "ending_nav": float(synthetic.iloc[-1]),
+    }
+
+
 def _tracking_stats(
     nav: pd.Series,
     benchmark: pd.Series,
@@ -78,18 +129,33 @@ def build_performance_table(
     navs: dict[str, pd.Series],
     rebalances: dict[str, pd.DataFrame],
     targets: pd.DataFrame,
-    optimization_success_rate: float,
+    optimization_success_rates: dict[str, float],
 ) -> pd.DataFrame:
     periods = {
         "development_2020_2023": (DEVELOPMENT_START, DEVELOPMENT_END),
         "holdout_2024_2025": (HOLDOUT_START, HOLDOUT_END),
         "full_2020_2025": (DEVELOPMENT_START, HOLDOUT_END),
     }
+    for year in range(DEVELOPMENT_START.year, HOLDOUT_END.year + 1):
+        periods[f"calendar_{year}"] = (
+            pd.Timestamp(f"{year}-01-01"),
+            pd.Timestamp(f"{year}-12-31"),
+        )
+    periods["holdout_ex_2024_policy_rally"] = (HOLDOUT_START, HOLDOUT_END)
     benchmark = navs["benchmark"]
     rows = []
     for period, (start, end) in periods.items():
         for label, nav in navs.items():
-            metrics = period_metrics(nav, start, end)
+            if period == "holdout_ex_2024_policy_rally":
+                metrics = event_adjusted_metrics(
+                    nav,
+                    start,
+                    end,
+                    POLICY_RALLY_START,
+                    POLICY_RALLY_END,
+                )
+            else:
+                metrics = period_metrics(nav, start, end)
             adjustment = rebalances[label]
             in_period = adjustment[
                 (adjustment["date"] >= start) & (adjustment["date"] <= end)
@@ -104,9 +170,12 @@ def build_performance_table(
                 if not target_view.empty
                 else pd.Series(dtype=float)
             )
-            tracking_error, information_ratio = _tracking_stats(
-                nav, benchmark, start, end
-            )
+            if period == "holdout_ex_2024_policy_rally":
+                tracking_error, information_ratio = np.nan, np.nan
+            else:
+                tracking_error, information_ratio = _tracking_stats(
+                    nav, benchmark, start, end
+                )
             rows.append(
                 {
                     "period": period,
@@ -120,9 +189,9 @@ def build_performance_table(
                     "mean_max_target_weight": max_weights.mean(),
                     "total_trading_cost_cny": in_period["trading_cost"].sum(),
                     "blocked_orders": in_period["blocked_orders"].sum(),
-                    "optimizer_success_rate": optimization_success_rate
-                    if label == "optimized"
-                    else np.nan,
+                    "optimizer_success_rate": optimization_success_rates.get(
+                        label, np.nan
+                    ),
                 }
             )
     performance = pd.DataFrame(rows)

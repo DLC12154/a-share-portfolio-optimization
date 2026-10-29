@@ -178,34 +178,42 @@ def attach_forward_returns(
     )
 
 
+def _signal_quality_rows(
+    frame: pd.DataFrame,
+    label: str,
+) -> dict:
+    valid = frame.dropna(subset=["alpha_score", "forward_open_5"])
+    rank_ic = (
+        valid.groupby("signal_date")
+        .apply(
+            lambda group: group["alpha_score"].corr(
+                group["forward_open_5"], method="spearman"
+            ),
+            include_groups=False,
+        )
+        .dropna()
+    )
+    return {
+        "stage": label,
+        "signal_dates": int(frame["signal_date"].nunique()),
+        "mean_rank_ic": float(rank_ic.mean()) if len(rank_ic) else np.nan,
+        "rank_ic_std": float(rank_ic.std(ddof=1))
+        if len(rank_ic) > 1
+        else np.nan,
+        "rank_icir": float(rank_ic.mean() / rank_ic.std(ddof=1))
+        if len(rank_ic) > 1 and rank_ic.std(ddof=1) > 0
+        else np.nan,
+        "positive_ic_ratio": float(rank_ic.gt(0).mean())
+        if len(rank_ic)
+        else np.nan,
+    }
+
+
 def signal_quality(signal: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for stage, frame in signal.groupby("stage", sort=False):
-        valid = frame.dropna(subset=["alpha_score", "forward_open_5"])
-        rank_ic = (
-            valid.groupby("signal_date")
-            .apply(
-                lambda group: group["alpha_score"].corr(
-                    group["forward_open_5"], method="spearman"
-                ),
-                include_groups=False,
-            )
-            .dropna()
-        )
-        rows.append(
-            {
-                "stage": stage,
-                "signal_dates": int(frame["signal_date"].nunique()),
-                "mean_rank_ic": float(rank_ic.mean()) if len(rank_ic) else np.nan,
-                "rank_ic_std": float(rank_ic.std(ddof=1))
-                if len(rank_ic) > 1
-                else np.nan,
-                "rank_icir": float(rank_ic.mean() / rank_ic.std(ddof=1))
-                if len(rank_ic) > 1 and rank_ic.std(ddof=1) > 0
-                else np.nan,
-                "positive_ic_ratio": float(rank_ic.gt(0).mean())
-                if len(rank_ic)
-                else np.nan,
-            }
-        )
+        rows.append(_signal_quality_rows(frame, stage))
+    years = signal["signal_date"].dt.year
+    for year, frame in signal.groupby(years, sort=True):
+        rows.append(_signal_quality_rows(frame, f"calendar_{year}"))
     return pd.DataFrame(rows)

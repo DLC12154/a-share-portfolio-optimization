@@ -48,6 +48,8 @@ class PortfolioConfig:
     max_one_way_turnover: float = 0.50
     risk_lookback_days: int = 120
     covariance_shrinkage: float = 0.20
+    risk_aversion: float = 0.50
+    turnover_penalty: float = 0.01
     minimum_history_days: int = 120
     minimum_adv20_cny: float = 30_000_000.0
     adv_participation_cap: float = 0.05

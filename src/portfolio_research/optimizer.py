@@ -81,6 +81,27 @@ def score_weights(
     return capped_normalize(shifted, max_weight)
 
 
+def turnover_limited_target(
+    desired_weights: pd.Series,
+    previous_weights: pd.Series,
+    max_one_way_turnover: float,
+    max_weight: float,
+) -> pd.Series:
+    """Move from the prior allocation toward a desired target without over-trading."""
+    universe = sorted(set(desired_weights.index) | set(previous_weights.index))
+    desired = desired_weights.reindex(universe, fill_value=0.0).astype(float)
+    previous = previous_weights.reindex(universe, fill_value=0.0).astype(float)
+    required = _one_way_turnover(desired.to_numpy(), previous.to_numpy())
+    if required <= max_one_way_turnover:
+        weights = desired
+    else:
+        scale = max_one_way_turnover / required
+        weights = previous + scale * (desired - previous)
+    weights = weights.clip(lower=0.0, upper=max_weight)
+    weights = weights / weights.sum()
+    return weights[weights.abs() > 1e-10]
+
+
 def _one_way_turnover(
     weights: np.ndarray,
     previous: np.ndarray,
@@ -99,6 +120,8 @@ def optimize_weights(
     betas: pd.Series | None = None,
     beta_target: float = 1.0,
     beta_tolerance: float = 0.20,
+    risk_aversion: float = 0.0,
+    turnover_penalty: float = 0.0,
 ) -> OptimizationResult:
     """Maximize alpha score subject to risk, weight and turnover constraints."""
     previous = previous_weights[previous_weights.abs() > 1e-10].astype(float)
@@ -142,7 +165,18 @@ def optimize_weights(
 
     def objective(weights: np.ndarray) -> float:
         regularization = 1e-7 * float(weights @ weights)
-        return float(-(full_scores.to_numpy() @ weights) + regularization)
+        risk_penalty = risk_aversion * float(
+            weights @ covariance_values @ weights
+        )
+        turnover = _one_way_turnover(
+            weights, previous_full.to_numpy()
+        )
+        return float(
+            -(full_scores.to_numpy() @ weights)
+            + risk_penalty
+            + turnover_penalty * turnover
+            + regularization
+        )
 
     def risk_constraint(weights: np.ndarray, limit: float) -> float:
         variance = float(weights @ covariance_values @ weights)

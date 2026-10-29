@@ -36,6 +36,7 @@ from .optimizer import (
     inverse_volatility_weights,
     optimize_weights,
     score_weights,
+    turnover_limited_target,
 )
 from .risk import (
     annualized_volatilities,
@@ -66,6 +67,9 @@ def build_targets(
     target_rows = []
     diagnostics = []
     previous_optimized = pd.Series(dtype=float)
+    previous_utility = pd.Series(dtype=float)
+    previous_equal20_capped = pd.Series(dtype=float)
+    previous_equal25_capped = pd.Series(dtype=float)
 
     grouped = list(signal.groupby("signal_date", sort=True))
     for index, (signal_date, date_frame) in enumerate(grouped, start=1):
@@ -76,12 +80,9 @@ def build_targets(
         risk_returns = market.returns.loc[
             market.returns.index <= signal_date
         ].tail(config.risk_lookback_days)
-        risk_universe = sorted(
-            set(candidates) | set(previous_optimized.index)
-        )
         covariance = estimate_shrunk_covariance(
             risk_returns,
-            risk_universe,
+            candidates,
             shrinkage=config.covariance_shrinkage,
         )
         available_candidates = [
@@ -91,12 +92,25 @@ def build_targets(
             raise ValueError(
                 f"{signal_date.date()}: insufficient risk-model candidates"
             )
-        betas = estimate_market_betas(
-            risk_returns,
-            covariance.index.tolist(),
-        )
-
+        candidates20 = available_candidates[:20]
+        candidates25 = available_candidates[:25]
+        equal20 = equal_weights(candidates20, config.max_weight)
+        equal25 = equal_weights(candidates25, config.max_weight)
         strategies = {
+            "equal_top20": equal20,
+            "equal_top25": equal25,
+            "equal_top20_turnover_cap": turnover_limited_target(
+                equal20,
+                previous_equal20_capped,
+                max_one_way_turnover=config.max_one_way_turnover,
+                max_weight=config.max_weight,
+            ),
+            "equal_top25_turnover_cap": turnover_limited_target(
+                equal25,
+                previous_equal25_capped,
+                max_one_way_turnover=config.max_one_way_turnover,
+                max_weight=config.max_weight,
+            ),
             "equal_top50": equal_weights(
                 available_candidates, config.max_weight
             ),
@@ -109,19 +123,58 @@ def build_targets(
                 config.max_weight,
             ),
         }
+        optimized_universe = sorted(
+            set(available_candidates) | set(previous_optimized.index)
+        )
+        optimized_covariance = estimate_shrunk_covariance(
+            risk_returns,
+            optimized_universe,
+            shrinkage=config.covariance_shrinkage,
+        )
+        optimized_betas = estimate_market_betas(
+            risk_returns, optimized_covariance.index.tolist()
+        )
         optimization = optimize_weights(
             candidate_codes=available_candidates,
             alpha_score=scores,
-            covariance=covariance,
+            covariance=optimized_covariance,
             previous_weights=previous_optimized,
             max_weight=config.max_weight,
             annual_vol_target=config.annual_vol_target,
             max_one_way_turnover=config.max_one_way_turnover,
-            betas=betas,
+            betas=optimized_betas,
             beta_target=1.0,
             beta_tolerance=0.20,
+            risk_aversion=0.0,
+            turnover_penalty=0.0,
         )
         strategies["optimized"] = optimization.weights
+        utility_universe = sorted(
+            set(available_candidates) | set(previous_utility.index)
+        )
+        utility_covariance = estimate_shrunk_covariance(
+            risk_returns,
+            utility_universe,
+            shrinkage=config.covariance_shrinkage,
+        )
+        utility_betas = estimate_market_betas(
+            risk_returns, utility_covariance.index.tolist()
+        )
+        utility = optimize_weights(
+            candidate_codes=available_candidates,
+            alpha_score=scores,
+            covariance=utility_covariance,
+            previous_weights=previous_utility,
+            max_weight=config.max_weight,
+            annual_vol_target=config.annual_vol_target,
+            max_one_way_turnover=config.max_one_way_turnover,
+            betas=utility_betas,
+            beta_target=1.0,
+            beta_tolerance=0.20,
+            risk_aversion=config.risk_aversion,
+            turnover_penalty=config.turnover_penalty,
+        )
+        strategies["optimized_utility"] = utility.weights
 
         for strategy, weights in strategies.items():
             weights = weights[weights > 1e-10]
@@ -152,40 +205,63 @@ def build_targets(
                 }
             )
 
-        optimized_covariance = covariance.reindex(optimization.weights.index)
-        ex_ante_beta = (
-            float(
-                betas.reindex(optimization.weights.index)
-                .fillna(1.0)
-                .dot(optimization.weights)
+        for strategy, result, risk_aversion, turnover_penalty, model_covariance, model_betas in [
+            (
+                "optimized",
+                optimization,
+                0.0,
+                0.0,
+                optimized_covariance,
+                optimized_betas,
+            ),
+            (
+                "optimized_utility",
+                utility,
+                config.risk_aversion,
+                config.turnover_penalty,
+                utility_covariance,
+                utility_betas,
+            ),
+        ]:
+            ex_ante_beta = (
+                float(
+                    model_betas.reindex(result.weights.index)
+                    .fillna(1.0)
+                    .dot(result.weights)
+                )
+                if len(result.weights)
+                else np.nan
             )
-            if len(optimization.weights)
-            else np.nan
-        )
-        diagnostics.append(
-            {
-                "signal_date": signal_date,
-                "execution_date": execution_date,
-                "candidate_count": len(candidates),
-                "risk_asset_count": len(covariance),
-                "optimizer_success": optimization.success,
-                "fallback": optimization.fallback,
-                "attempts": optimization.attempts,
-                "status": optimization.status,
-                "target_annual_volatility": config.annual_vol_target,
-                "effective_vol_target": optimization.effective_vol_target,
-                "realized_annual_volatility": optimization.annualized_volatility,
-                "target_one_way_turnover": optimization.target_one_way_turnover,
-                "max_one_way_turnover": config.max_one_way_turnover,
-                "ex_ante_beta": ex_ante_beta,
-                "optimized_assets": int((optimization.weights > 1e-8).sum()),
-            }
-        )
+            diagnostics.append(
+                {
+                    "signal_date": signal_date,
+                    "execution_date": execution_date,
+                    "strategy": strategy,
+                    "candidate_count": len(candidates),
+                    "risk_asset_count": len(model_covariance),
+                    "optimizer_success": result.success,
+                    "fallback": result.fallback,
+                    "attempts": result.attempts,
+                    "status": result.status,
+                    "risk_aversion": risk_aversion,
+                    "turnover_penalty": turnover_penalty,
+                    "target_annual_volatility": config.annual_vol_target,
+                    "effective_vol_target": result.effective_vol_target,
+                    "realized_annual_volatility": result.annualized_volatility,
+                    "target_one_way_turnover": result.target_one_way_turnover,
+                    "max_one_way_turnover": config.max_one_way_turnover,
+                    "ex_ante_beta": ex_ante_beta,
+                    "optimized_assets": int((result.weights > 1e-8).sum()),
+                }
+            )
         previous_optimized = optimization.weights
+        previous_utility = utility.weights
+        previous_equal20_capped = strategies["equal_top20_turnover_cap"]
+        previous_equal25_capped = strategies["equal_top25_turnover_cap"]
         if index % 25 == 0 or index == len(grouped):
             print(
                 f"Optimized {index}/{len(grouped)} signal dates; "
-                f"success={optimization.success}, fallback={optimization.fallback}",
+                f"alpha={optimization.success}/risk={utility.success}",
                 flush=True,
             )
 
@@ -199,11 +275,27 @@ def build_targets(
     if not np.allclose(sums, 1.0, atol=1e-5):
         bad = sums[~np.isclose(sums, 1.0, atol=1e-5)]
         raise AssertionError(f"Invalid target weights: {bad.head().to_dict()}")
+    success_rates = {
+        str(strategy): float(rate)
+        for strategy, rate in diagnostics_frame.groupby("strategy")[
+            "optimizer_success"
+        ]
+        .mean()
+        .items()
+    }
+    fallbacks = {
+        str(strategy): int(count)
+        for strategy, count in diagnostics_frame.groupby("strategy")[
+            "fallback"
+        ]
+        .sum()
+        .items()
+    }
     return targets, diagnostics_frame, {
-        "optimizer_success_rate": float(
-            diagnostics_frame["optimizer_success"].mean()
-        ),
-        "optimizer_fallbacks": int(diagnostics_frame["fallback"].sum()),
+        "optimizer_success_rates": success_rates,
+        "optimizer_fallbacks": fallbacks,
+        "risk_aversion": config.risk_aversion,
+        "turnover_penalty": config.turnover_penalty,
     }
 
 
@@ -215,6 +307,7 @@ def make_figures(
     navs: dict[str, pd.Series],
     rebalances: dict[str, pd.DataFrame],
     diagnostics: pd.DataFrame,
+    performance: pd.DataFrame,
 ) -> None:
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
     holdout = pd.concat(navs, axis=1).ffill()
@@ -223,7 +316,13 @@ def make_figures(
     ]
     holdout = holdout.div(holdout.iloc[0])
     axis = holdout[
-        ["optimized", "equal_top50", "inverse_vol_top50", "benchmark"]
+        [
+            "optimized",
+            "optimized_utility",
+            "equal_top20_turnover_cap",
+            "equal_top50",
+            "benchmark",
+        ]
     ].plot(figsize=(11, 5.5))
     axis.set_title("Time holdout portfolio value (2024-2025)")
     axis.set_xlabel("")
@@ -232,9 +331,13 @@ def make_figures(
     axis.figure.savefig(FIGURE_DIR / "holdout_nav.png", dpi=160)
     plt.close(axis.figure)
 
-    drawdowns = holdout[["optimized", "equal_top50", "benchmark"]].apply(
-        _drawdown
-    )
+    drawdowns = holdout[
+        [
+            "optimized_utility",
+            "equal_top20_turnover_cap",
+            "benchmark",
+        ]
+    ].apply(_drawdown)
     axis = drawdowns.plot(figsize=(11, 4.5))
     axis.set_title("Time holdout drawdown")
     axis.set_xlabel("")
@@ -252,9 +355,13 @@ def make_figures(
     turnover = turnover.loc[
         (turnover.index >= HOLDOUT_START) & (turnover.index <= HOLDOUT_END)
     ]
-    axis = turnover[["optimized", "equal_top50", "benchmark"]].plot(
-        figsize=(11, 4.5), alpha=0.85
-    )
+    axis = turnover[
+        [
+            "optimized_utility",
+            "equal_top20_turnover_cap",
+            "benchmark",
+        ]
+    ].plot(figsize=(11, 4.5), alpha=0.85)
     axis.set_title("One-way turnover at rebalance dates")
     axis.set_xlabel("")
     axis.set_ylabel("One-way turnover")
@@ -262,17 +369,26 @@ def make_figures(
     axis.figure.savefig(FIGURE_DIR / "turnover.png", dpi=160)
     plt.close(axis.figure)
 
+    alpha_only = diagnostics[diagnostics["strategy"] == "optimized"]
+    utility = diagnostics[diagnostics["strategy"] == "optimized_utility"]
     figure, axis = plt.subplots(figsize=(10, 4.5))
     axis.plot(
-        diagnostics["signal_date"],
-        diagnostics["target_annual_volatility"],
+        utility["signal_date"],
+        utility["target_annual_volatility"],
         label="Target volatility",
         linewidth=1.5,
     )
     axis.plot(
-        diagnostics["signal_date"],
-        diagnostics["realized_annual_volatility"],
-        label="Ex-ante portfolio volatility",
+        alpha_only["signal_date"],
+        alpha_only["realized_annual_volatility"],
+        label="Alpha allocator volatility",
+        linewidth=1.0,
+        alpha=0.8,
+    )
+    axis.plot(
+        utility["signal_date"],
+        utility["realized_annual_volatility"],
+        label="Risk-penalized utility volatility",
         linewidth=1.2,
     )
     axis.set_title("Optimizer ex-ante risk")
@@ -283,15 +399,65 @@ def make_figures(
     figure.savefig(FIGURE_DIR / "optimizer_risk.png", dpi=160)
     plt.close(figure)
 
+    yearly = performance[
+        performance["period"].str.startswith("calendar_")
+    ].copy()
+    yearly["year"] = yearly["period"].str.removeprefix("calendar_")
+    selected = yearly[
+        yearly["portfolio"].isin(
+            [
+                "optimized_utility",
+                "equal_top20_turnover_cap",
+                "benchmark",
+            ]
+        )
+    ].pivot(index="year", columns="portfolio", values="cagr")
+    axis = selected.plot(kind="bar", figsize=(9, 4.5))
+    axis.axhline(0, color="black", linewidth=0.8)
+    axis.set_title("Calendar-year CAGR")
+    axis.set_xlabel("")
+    axis.set_ylabel("CAGR")
+    axis.figure.tight_layout()
+    axis.figure.savefig(FIGURE_DIR / "yearly_returns.png", dpi=160)
+    plt.close(axis.figure)
+
+
+def _markdown_table(frame: pd.DataFrame, columns: list[str]) -> str:
+    lines = [
+        "| " + " | ".join(columns) + " |",
+        "|" + "|".join(["---"] * len(columns)) + "|",
+    ]
+    for row in frame[columns].itertuples(index=False, name=None):
+        formatted = [
+            str(value)
+            if isinstance(value, str)
+            else f"{float(value):.4f}"
+            if pd.notna(value)
+            else "n/a"
+            for value in row
+        ]
+        lines.append("| " + " | ".join(formatted) + " |")
+    return "\n".join(lines)
+
 
 def write_results_document(
     performance: pd.DataFrame,
     summary: dict,
     config: PortfolioConfig,
+    signal_stats: pd.DataFrame,
 ) -> None:
-    holdout = performance[
-        performance["period"] == "holdout_2024_2025"
+    holdout = performance[performance["period"] == "holdout_2024_2025"].copy()
+    event_excluded = performance[
+        performance["period"] == "holdout_ex_2024_policy_rally"
     ].copy()
+    yearly = performance[
+        performance["period"].str.startswith("calendar_")
+    ].copy()
+    yearly["year"] = yearly["period"].str.removeprefix("calendar_")
+    yearly_signal = signal_stats[
+        signal_stats["stage"].str.startswith("calendar_")
+    ].copy()
+    yearly_signal["year"] = yearly_signal["stage"].str.removeprefix("calendar_")
     columns = [
         "portfolio",
         "cagr",
@@ -302,22 +468,46 @@ def write_results_document(
         "mean_one_way_turnover",
         "mean_max_target_weight",
     ]
-    table_lines = [
-        "| " + " | ".join(columns) + " |",
-        "|" + "|".join(["---"] * len(columns)) + "|",
+    holdout_table = _markdown_table(holdout, columns)
+    yearly_columns = [
+        "year",
+        "portfolio",
+        "cagr",
+        "sharpe",
+        "max_drawdown",
+        "mean_holdings",
+        "mean_one_way_turnover",
     ]
-    for row in holdout[columns].itertuples(index=False, name=None):
-        formatted = [
-            str(value)
-            if isinstance(value, str)
-            else f"{float(value):.4f}"
-            if pd.notna(value)
-            else "n/a"
-            for value in row
-        ]
-        table_lines.append("| " + " | ".join(formatted) + " |")
+    year_table = _markdown_table(yearly, yearly_columns)
+    signal_table = _markdown_table(
+        yearly_signal,
+        ["year", "mean_rank_ic", "rank_icir", "positive_ic_ratio"],
+    )
+    event_columns = [
+        "portfolio",
+        "cagr",
+        "sharpe",
+        "max_drawdown",
+    ]
+    event_table = _markdown_table(event_excluded, event_columns)
+
+    def metric(frame: pd.DataFrame, portfolio: str, column: str) -> float:
+        value = frame.loc[
+            frame["portfolio"] == portfolio, column
+        ].iloc[0]
+        return float(value)
+
+    utility_2025 = yearly.loc[
+        (yearly["year"] == "2025")
+        & (yearly["portfolio"] == "optimized_utility")
+    ].iloc[0]
+    benchmark_2025 = yearly.loc[
+        (yearly["year"] == "2025")
+        & (yearly["portfolio"] == "benchmark")
+    ].iloc[0]
+    signal_2025 = yearly_signal.loc[yearly_signal["year"] == "2025"].iloc[0]
     markdown = [
-        "# 时间外验证结果",
+        "# 组合优化研究结果",
         "",
         "本次运行使用固定的四因子等权复合信号作为可复现Alpha基线。"
         "项目支持通过外部文件接入第二项目的滚动样本外预测分数。",
@@ -330,21 +520,66 @@ def write_results_document(
         f"- 单次最大单边换手：{config.max_one_way_turnover:.1%}",
         f"- 风险模型窗口：{config.risk_lookback_days}个交易日",
         f"- 协方差收缩系数：{config.covariance_shrinkage:.2f}",
+        f"- 风险惩罚系数：{config.risk_aversion:.2f}",
+        f"- 换手惩罚系数：{config.turnover_penalty:.2f}",
         "",
-        "## 2024-2025结果",
+        "`optimized`只最大化Alpha并在硬约束内分配权重，"
+        "`optimized_utility`额外把协方差风险和换手惩罚放入目标函数。"
+        "后者是在已有结果审查后加入的透明扩展，不是预先注册的盲测策略。",
         "",
-        *table_lines,
+        "## 2024-2025整体结果",
+        "",
+        holdout_table,
+        "",
+        "## 分年结果",
+        "",
+        year_table,
+        "",
+        "## 分年Alpha有效性",
+        "",
+        signal_table,
+        "",
+        "## 排除2024年9-10月政策行情",
+        "",
+        "该敏感性分析将2024-09-10至2024-10-10及其后第一个交易日的收益统一归零，"
+        "用于观察其余时间路径。它不是可交易规则。",
+        "",
+        event_table,
         "",
         "## 解释",
         "",
-        "业绩结果只代表给定信号、约束和执行假设下的历史模拟。"
-        "优化器的作用应结合Sharpe、最大回撤、换手和成本后收益共同判断，"
-        "不能仅因为总收益变化就认定风险模型有效。",
+        f"2025年复合信号Mean RankIC为{signal_2025['mean_rank_ic']:.4f}，"
+        f"同期风险惩罚组合CAGR为{utility_2025['cagr']:.2%}，"
+        f"全市场等权净基准CAGR为{benchmark_2025['cagr']:.2%}。"
+        "因此2024-2025的整体结果主要由2024年贡献，不能表述为跨年度稳定的Alpha。",
+        "",
+        f"时间外区间内，风险惩罚组合CAGR为"
+        f"{metric(holdout, 'optimized_utility', 'cagr'):.2%}、"
+        f"Sharpe为{metric(holdout, 'optimized_utility', 'sharpe'):.3f}、"
+        f"最大回撤为{metric(holdout, 'optimized_utility', 'max_drawdown'):.2%}。"
+        f"同换手约束的Top 25等权组合CAGR为"
+        f"{metric(holdout, 'equal_top25_turnover_cap', 'cagr'):.2%}、"
+        f"Sharpe为{metric(holdout, 'equal_top25_turnover_cap', 'sharpe'):.3f}、"
+        f"最大回撤为"
+        f"{metric(holdout, 'equal_top25_turnover_cap', 'max_drawdown'):.2%}。"
+        "风险惩罚改善了纯Alpha分配器，但没有稳定超过同规模简单等权组合，"
+        "不能只与包含约300只股票的等权基准比较。",
+        "",
+        f"排除政策行情窗口后，风险惩罚组合CAGR为"
+        f"{metric(event_excluded, 'optimized_utility', 'cagr'):.2%}、"
+        f"Sharpe为{metric(event_excluded, 'optimized_utility', 'sharpe'):.3f}；"
+        f"Top 25换手受限等权组合CAGR为"
+        f"{metric(event_excluded, 'equal_top25_turnover_cap', 'cagr'):.2%}、"
+        f"Sharpe为"
+        f"{metric(event_excluded, 'equal_top25_turnover_cap', 'sharpe'):.3f}。",
         "",
         "## 优化器运行质量",
         "",
-        f"- 成功求解比例：{summary['optimizer_success_rate']:.1%}",
-        f"- 回退次数：{summary['optimizer_fallbacks']}",
+        *[
+            f"- {strategy}成功求解比例：{rate:.1%}，回退次数："
+            f"{summary['optimizer_fallbacks'].get(strategy, 0)}"
+            for strategy, rate in summary["optimizer_success_rates"].items()
+        ],
         "",
     ]
     (DOCS_DIR / "results.md").write_text(
@@ -391,10 +626,17 @@ def run_pipeline(
         for label, frame in targets.groupby("strategy")
     }
     strategy_targets["optimized_gross"] = strategy_targets["optimized"].copy()
+    strategy_targets["optimized_utility_gross"] = strategy_targets[
+        "optimized_utility"
+    ].copy()
     simulations: dict[str, BacktestOutput] = {}
     for label, frame in strategy_targets.items():
         print(f"Simulating {label}...", flush=True)
-        chosen_costs = config.zero_costs() if label == "optimized_gross" else costs
+        chosen_costs = (
+            config.zero_costs()
+            if label.endswith("_gross")
+            else costs
+        )
         simulations[label] = simulate_target_weights(
             market,
             frame,
@@ -411,7 +653,9 @@ def run_pipeline(
         navs,
         rebalances,
         targets,
-        optimization_success_rate=optimizer_summary["optimizer_success_rate"],
+        optimization_success_rates=optimizer_summary[
+            "optimizer_success_rates"
+        ],
     )
 
     signal.to_csv(
@@ -480,18 +724,29 @@ def run_pipeline(
             "No permanent market impact or order-book queue model",
             "Baostock historical membership is provider-reconstructed",
             "2024-2025 is a retrospective time holdout, not a pre-registered OOS",
+            "The risk-penalized utility was added after the first holdout review and is not a blind strategy",
         ],
     }
     (output_dir / "run_metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    make_figures(navs, rebalances, diagnostics)
-    write_results_document(performance, optimizer_summary, config)
+    make_figures(navs, rebalances, diagnostics, performance)
+    write_results_document(
+        performance,
+        optimizer_summary,
+        config,
+        signal_stats,
+    )
     print(performance.to_string(index=False), flush=True)
     print(
-        f"PASS: optimized successfully on "
-        f"{optimizer_summary['optimizer_success_rate']:.1%} of dates",
+        "PASS: optimizer success rates "
+        + ", ".join(
+            f"{name}={rate:.1%}"
+            for name, rate in optimizer_summary[
+                "optimizer_success_rates"
+            ].items()
+        ),
         flush=True,
     )
     return {

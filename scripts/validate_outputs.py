@@ -39,6 +39,7 @@ def main() -> None:
         PROCESSED / "rebalances.csv",
         PROCESSED / "data_quality.json",
         PROCESSED / "run_metadata.json",
+        ROOT / "figures" / "yearly_returns.png",
     ]
     for path in required_files:
         require(path.exists() and path.stat().st_size > 0, f"Missing output: {path}")
@@ -67,11 +68,31 @@ def main() -> None:
         (targets["weight"] >= -1e-12).all(),
         "Negative target weight detected",
     )
-    optimized = targets[targets["strategy"] == "optimized"]
+    optimized = targets[
+        targets["strategy"].isin(["optimized", "optimized_utility"])
+    ]
     require(
         optimized["weight"].max() <= 0.05 + 1e-6,
         "Optimized portfolio exceeds the 5% stock cap",
     )
+    for strategy in [
+        "equal_top20_turnover_cap",
+        "equal_top25_turnover_cap",
+    ]:
+        view = targets[targets["strategy"] == strategy]
+        pivot = (
+            view.pivot(index="execution_date", columns="code", values="weight")
+            .fillna(0.0)
+            .sort_index()
+        )
+        previous = pd.Series(0.0, index=pivot.columns)
+        for _, current in pivot.iterrows():
+            turnover = 0.5 * (current - previous).abs().sum()
+            require(
+                turnover <= 0.50 + 2e-5,
+                f"{strategy} violates the 50% target-turnover cap",
+            )
+            previous = current
 
     diagnostics = pd.read_csv(PROCESSED / "optimizer_diagnostics.csv")
     require(
@@ -111,10 +132,29 @@ def main() -> None:
 
     performance = pd.read_csv(PROCESSED / "performance.csv")
     require(
-        {"benchmark", "equal_top50", "optimized"}.issubset(
+        {
+            "benchmark",
+            "equal_top20_turnover_cap",
+            "equal_top50",
+            "optimized",
+            "optimized_utility",
+        }.issubset(
             set(performance["portfolio"])
         ),
         "Required comparison portfolios are missing",
+    )
+    require(
+        {
+            "calendar_2024",
+            "calendar_2025",
+            "holdout_ex_2024_policy_rally",
+        }.issubset(set(performance["period"])),
+        "Calendar-year or event-window diagnostics are missing",
+    )
+    signal_quality = pd.read_csv(PROCESSED / "signal_quality.csv")
+    require(
+        "calendar_2025" in set(signal_quality["stage"]),
+        "2025 signal-quality diagnostic is missing",
     )
 
     print(

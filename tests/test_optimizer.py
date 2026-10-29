@@ -15,6 +15,7 @@ from portfolio_research.optimizer import (  # noqa: E402
     capped_normalize,
     inverse_volatility_weights,
     optimize_weights,
+    turnover_limited_target,
 )
 from portfolio_research.risk import portfolio_volatility  # noqa: E402
 
@@ -65,6 +66,47 @@ class OptimizerTests(unittest.TestCase):
         self.assertLessEqual(
             portfolio_volatility(result.weights, self.covariance),
             result.effective_vol_target + 1e-5,
+        )
+
+    def test_turnover_limited_target_moves_gradually(self) -> None:
+        target = pd.Series([0.5, 0.5, 0.0], index=["A", "B", "C"])
+        previous = pd.Series([0.0, 0.5, 0.5], index=["A", "B", "C"])
+        limited = turnover_limited_target(
+            target,
+            previous,
+            max_one_way_turnover=0.10,
+            max_weight=0.50,
+        )
+        turnover = 0.5 * (limited - previous).abs().sum()
+        self.assertAlmostEqual(float(limited.sum()), 1.0, places=8)
+        self.assertLessEqual(turnover, 0.100001)
+        self.assertGreater(limited["C"], 0.0)
+
+    def test_risk_penalty_changes_allocation(self) -> None:
+        codes = ["A", "B"]
+        covariance = pd.DataFrame(
+            np.diag([0.50, 0.01]), index=codes, columns=codes
+        )
+        scores = pd.Series([1.0, 0.0], index=codes)
+        previous = pd.Series(0.0, index=codes)
+        common = dict(
+            candidate_codes=codes,
+            alpha_score=scores,
+            covariance=covariance,
+            previous_weights=previous,
+            max_weight=1.0,
+            annual_vol_target=1.0,
+            max_one_way_turnover=1.0,
+            betas=pd.Series([1.0, 1.0], index=codes),
+            beta_tolerance=0.20,
+        )
+        alpha_only = optimize_weights(**common)
+        risk_aware = optimize_weights(**common, risk_aversion=1.0)
+        self.assertTrue(alpha_only.success)
+        self.assertTrue(risk_aware.success)
+        self.assertLess(
+            portfolio_volatility(risk_aware.weights, covariance),
+            portfolio_volatility(alpha_only.weights, covariance),
         )
 
 
