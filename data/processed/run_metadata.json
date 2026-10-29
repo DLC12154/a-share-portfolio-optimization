@@ -1,0 +1,47 @@
+{
+  "run_at_utc": "2026-10-29T15:21:00.056758+00:00",
+  "python": "3.12.15",
+  "alpha_source": "composite",
+  "external_alpha": null,
+  "development_period": [
+    "2020-01-02",
+    "2023-12-29"
+  ],
+  "time_holdout_period": [
+    "2024-01-02",
+    "2025-12-31"
+  ],
+  "config": {
+    "top_n": 50,
+    "max_weight": 0.05,
+    "annual_vol_target": 0.22,
+    "max_one_way_turnover": 0.5,
+    "risk_lookback_days": 120,
+    "covariance_shrinkage": 0.2,
+    "minimum_history_days": 120,
+    "minimum_adv20_cny": 30000000.0,
+    "adv_participation_cap": 0.05,
+    "initial_capital_cny": 100000000.0,
+    "minimum_order_notional_cny": 1000.0,
+    "commission_rate": 0.0003,
+    "minimum_commission_cny": 5.0,
+    "slippage_rate": 0.0005,
+    "stamp_duty_pre_2023": 0.001,
+    "stamp_duty_post_2023": 0.0005
+  },
+  "optimizer": {
+    "optimizer_success_rate": 1.0,
+    "optimizer_fallbacks": 0
+  },
+  "inputs": {
+    "prices_sha256": "3f13a8eafb9138ff33a8c0807f143782f229c25f5fac8e3a7e4f7a74f4820a23",
+    "membership_sha256": "b86282e9a5e1d50d1e83335568367628c276e3d3ffca21088ce5c771ff58c57b"
+  },
+  "known_limitations": [
+    "No point-in-time industry classification in the verified run",
+    "No 100-share lot rounding",
+    "No permanent market impact or order-book queue model",
+    "Baostock historical membership is provider-reconstructed",
+    "2024-2025 is a retrospective time holdout, not a pre-registered OOS"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "membership_snapshots": 291,
+  "membership_rows": 87300,
+  "all_snapshots_have_300_codes": true,
+  "historical_codes": 481,
+  "price_rows": 731507,
+  "price_codes": 481,
+  "price_start": "2019-07-01",
+  "price_end": "2025-12-31",
+  "duplicate_price_keys": 0,
+  "duplicate_signal_keys": 0,
+  "signal_dates": 291,
+  "membership_dates_without_signal": 0,
+  "signal_rows": 85444,
+  "signal_rows_per_date": {
+    "minimum": 282,
+    "median": 294.0,
+    "maximum": 300
+  },
+  "null_factor_counts": {
+    "momentum_20": 0,
+    "reversal_5": 0,
+    "low_volatility_20": 0,
+    "low_turnover_20": 0,
+    "alpha_score": 0
+  }
+}

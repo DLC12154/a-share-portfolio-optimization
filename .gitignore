@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ipynb_checkpoints/
+data/cache/
+data/raw/*.parquet
