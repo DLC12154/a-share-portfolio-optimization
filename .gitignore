@@ -3,5 +3,6 @@ __pycache__/
 .venv/
 .pytest_cache/
 .ipynb_checkpoints/
+.vscode/
 data/cache/
 data/raw/*.parquet
