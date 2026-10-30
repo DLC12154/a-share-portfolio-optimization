@@ -2,7 +2,7 @@
 
 验证日期：2026-10-30
 Python：3.12.15  
-解释器：`C:\Users\ad\.conda\envs\teach\python.exe`
+环境：本地Conda科学计算环境，依赖版本见`requirements.txt`
 
 ## 输入完整性
 
@@ -17,7 +17,7 @@ Python：3.12.15
 执行：
 
 ```powershell
-C:\Users\ad\.conda\envs\teach\python.exe -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```
 
 结果：11项测试全部通过，覆盖：
@@ -38,7 +38,7 @@ C:\Users\ad\.conda\envs\teach\python.exe -m unittest discover -s tests -v
 执行：
 
 ```powershell
-C:\Users\ad\.conda\envs\teach\python.exe run.py
+python run.py
 ```
 
 结果：
@@ -56,7 +56,7 @@ C:\Users\ad\.conda\envs\teach\python.exe run.py
 输出审计：
 
 ```powershell
-C:\Users\ad\.conda\envs\teach\python.exe scripts\validate_outputs.py
+python scripts\validate_outputs.py
 ```
 
 结果：`PASS`。

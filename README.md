@@ -101,29 +101,26 @@ Alpha默认由以下四个横截面排名字段等权合成：
 
 ## 运行
 
-项目指定的Python解释器：
-
-```text
-C:\Users\ad\.conda\envs\teach\python.exe
-```
+项目验证环境为Python 3.12.15。请在编辑器中为项目选择自己的Python环境，
+依赖版本见`requirements.txt`。
 
 直接运行：
 
 ```powershell
-cd D:\找工作\个人材料\a-share-portfolio-optimization
-C:\Users\ad\.conda\envs\teach\python.exe run.py
+cd path\to\a-share-portfolio-optimization
+python run.py
 ```
 
 运行测试：
 
 ```powershell
-C:\Users\ad\.conda\envs\teach\python.exe -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```
 
 审计输入哈希、目标权重、风险约束、换手、净值和交易日志：
 
 ```powershell
-C:\Users\ad\.conda\envs\teach\python.exe scripts\validate_outputs.py
+python scripts\validate_outputs.py
 ```
 
 ### 接入第二项研究的预测
@@ -139,7 +136,7 @@ date,code,score
 运行：
 
 ```powershell
-C:\Users\ad\.conda\envs\teach\python.exe run.py --alpha-source external --external-alpha path\to\predictions.csv
+python run.py --alpha-source external --external-alpha path\to\predictions.csv
 ```
 
 系统要求每个调仓日与合格股票池的匹配率至少达到90%，否则直接失败，避免把残缺预测结果当作完整模型。
